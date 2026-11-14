@@ -95,6 +95,12 @@ if(ENABLE_SDL)
 		api/SDL/SDLControllerProvider.h
 	)
 	target_link_libraries(CemuInput PRIVATE	SDL3::SDL3)
+	if (WIN32)
+		target_sources(CemuInput PRIVATE
+			api/SDL/SystemIMU.cpp
+			api/SDL/SystemIMU.h
+		)
+	endif()
 endif()
 
 target_include_directories(CemuInput PUBLIC "../")

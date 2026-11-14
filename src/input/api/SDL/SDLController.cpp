@@ -52,6 +52,9 @@ bool SDLController::connect()
 		return true;
 
 	m_has_rumble = false;
+	m_has_gyro = false;
+	m_has_accel = false;
+	m_use_system_imu = false;
 	const auto index = m_provider->get_index(m_guid_index, m_guid);
 	std::scoped_lock lock(m_controller_mutex);
 
@@ -85,6 +88,10 @@ bool SDLController::connect()
 	if (SDL_GamepadHasSensor(m_controller, SDL_SENSOR_GYRO))
 		m_has_gyro = SDL_SetGamepadSensorEnabled(m_controller, SDL_SENSOR_GYRO, true);
 	m_has_rumble = SDL_RumbleGamepad(m_controller, 0, 0, 0);
+	// handheld gamepads like the MSI Claw's are plain XInput devices, the gyro lives in the device itself
+	m_use_system_imu = !(m_has_gyro && m_has_accel) && SDLControllerProvider::system_imu_available();
+	if (m_use_system_imu)
+		cemuLog_log(LogType::Force, "SDL: \"{}\" has no motion sensors, using the built-in system IMU", m_display_name);
 	return true;
 }
 
@@ -109,7 +116,11 @@ void SDLController::stop_rumble()
 MotionSample SDLController::get_motion_sample()
 {
 	if (is_connected() && has_motion())
+	{
+		if (m_use_system_imu)
+			return m_provider->system_imu_motion_sample();
 		return m_provider->motion_sample(m_diid);
+	}
 	return {};
 }
 

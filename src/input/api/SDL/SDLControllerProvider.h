@@ -1,5 +1,6 @@
 #pragma once
 #include <SDL3/SDL_joystick.h>
+#include <SDL3/SDL_sensor.h>
 #include "input/motion/MotionHandler.h"
 #include "input/api/ControllerProvider.h"
 
@@ -23,6 +24,10 @@ public:
 	int get_index(size_t guid_index, const SDL_GUID& guid) const;
 
 	MotionSample motion_sample(SDL_JoystickID diid);
+
+	// built-in IMU of the host device (Windows handhelds), used for gamepads without their own motion sensors
+	static bool system_imu_available();
+	MotionSample system_imu_motion_sample();
 
 	// exposed for manual event handling on macOS
 #if BOOST_OS_MACOS
@@ -66,4 +71,9 @@ private:
 	};
 
 	inline static std::unordered_map<SDL_JoystickID, MotionState> s_motion_states{};
+	// kept separate from s_motion_states, which is keyed by (and erased with) gamepad ids
+	inline static MotionState s_system_imu_state{};
+
+	static void ProcessSensorSample(MotionState& state, SDL_SensorType sensor, uint64 timestamp, const float* data);
+	static void OnSystemIMUSample(uint64_t timestampNs, const float gyro[3], const float accel[3]);
 };

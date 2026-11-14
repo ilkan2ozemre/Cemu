@@ -23,7 +23,7 @@ public:
 	bool is_connected() override;
 	bool connect() override;
 	
-	bool has_motion() override { return m_has_gyro && m_has_accel; }
+	bool has_motion() override { return (m_has_gyro && m_has_accel) || m_use_system_imu; }
 	bool has_rumble() override { return m_has_rumble; }
 	
 	void start_rumble() override;
@@ -53,6 +53,7 @@ private:
 	bool m_has_gyro = false;
 	bool m_has_accel = false;
 	bool m_has_rumble = false;
+	bool m_use_system_imu = false; // gamepad has no motion sensors, use the host device's built-in IMU
 	
 	std::array<bool, SDL_GAMEPAD_BUTTON_COUNT> m_buttons{};
 	std::array<bool, SDL_GAMEPAD_AXIS_COUNT> m_axis{};

@@ -2,6 +2,9 @@
 
 #include "input/api/SDL/SDLController.h"
 #include "util/helpers/TempState.h"
+#if BOOST_OS_WINDOWS
+#include "input/api/SDL/SystemIMU.h"
+#endif
 
 #include <SDL3/SDL.h>
 
@@ -116,8 +119,34 @@ MotionSample SDLControllerProvider::motion_sample(SDL_JoystickID diid)
 	return (it != s_motion_states.end()) ? it->second.data : MotionSample{};
 }
 
+bool SDLControllerProvider::system_imu_available()
+{
+#if BOOST_OS_WINDOWS
+	return SystemIMU::IsAvailable();
+#else
+	return false;
+#endif
+}
+
+MotionSample SDLControllerProvider::system_imu_motion_sample()
+{
+	std::shared_lock lock(s_mutex);
+	return s_system_imu_state.data;
+}
+
+void SDLControllerProvider::OnSystemIMUSample(uint64_t timestampNs, const float gyro[3], const float accel[3])
+{
+	std::scoped_lock _l(s_mutex);
+	ProcessSensorSample(s_system_imu_state, SDL_SENSOR_ACCEL, timestampNs, accel);
+	ProcessSensorSample(s_system_imu_state, SDL_SENSOR_GYRO, timestampNs, gyro);
+}
+
 void SDLControllerProvider::InitSDL()
 {
+#if BOOST_OS_WINDOWS
+	// probe before SDL reports any gamepads, so SDLController::connect() sees the result
+	SystemIMU::Start(&SDLControllerProvider::OnSystemIMUSample);
+#endif
 	SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
 	SDL_SetHint(SDL_HINT_JOYSTICK_ENHANCED_REPORTS, "1");
 	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4, "1");
@@ -132,6 +161,9 @@ void SDLControllerProvider::InitSDL()
 
 	if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC))
 	{
+#if BOOST_OS_WINDOWS
+		SystemIMU::Stop();
+#endif
 		throw std::runtime_error(fmt::format("couldn't initialize SDL: {}", SDL_GetError()));
 	}
 
@@ -144,6 +176,9 @@ void SDLControllerProvider::InitSDL()
 
 void SDLControllerProvider::ShutdownSDL()
 {
+#if BOOST_OS_WINDOWS
+	SystemIMU::Stop();
+#endif
 	SDL_QuitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC);
 }
 
@@ -209,80 +244,83 @@ void SDLControllerProvider::HandleSDLEvent(SDL_Event& event)
 		}
 		case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:		/**< Game controller sensor was updated */
 		{
-			SDL_JoystickID id = event.gsensor.which;
-			uint64_t ts = event.gsensor.timestamp;
 			std::scoped_lock _l(s_mutex);
-			auto& state = s_motion_states[id];
-			auto& tracking = state.tracking;
-
-			if (event.gsensor.sensor == SDL_SENSOR_ACCEL)
-			{
-				const auto dif = ts - tracking.lastTimestampAccel;
-				if (dif <= 0)
-				{
-					break;
-				}
-
-				if (dif >= 10000000000)
-				{
-					tracking.hasAcc = false;
-					tracking.hasGyro = false;
-					tracking.lastTimestampAccel = ts;
-					break;
-				}
-
-				tracking.lastTimestampAccel = ts;
-				tracking.acc[0] = -event.gsensor.data[0] / 9.81f;
-				tracking.acc[1] = -event.gsensor.data[1] / 9.81f;
-				tracking.acc[2] = -event.gsensor.data[2] / 9.81f;
-				tracking.hasAcc = true;
-			}
-			if (event.gsensor.sensor == SDL_SENSOR_GYRO)
-			{
-				const auto dif = ts - tracking.lastTimestampGyro;
-				if (dif <= 0)
-				{
-					break;
-				}
-
-				if (dif >= 10000000000)
-				{
-					tracking.hasAcc = false;
-					tracking.hasGyro = false;
-					tracking.lastTimestampGyro = ts;
-					break;
-				}
-
-				tracking.lastTimestampGyro = ts;
-				tracking.gyro[0] = event.gsensor.data[0];
-				tracking.gyro[1] = -event.gsensor.data[1];
-				tracking.gyro[2] = -event.gsensor.data[2];
-				tracking.hasGyro = true;
-			}
-			if (tracking.hasAcc && tracking.hasGyro)
-			{
-				auto ts = std::max(tracking.lastTimestampGyro, tracking.lastTimestampAccel);
-
-				if (ts > tracking.lastTimestampIntegrate)
-				{
-					const auto tsDif = ts - tracking.lastTimestampIntegrate;
-					tracking.lastTimestampIntegrate = ts;
-					float tsDifD = (float)tsDif / 1000000000.0f;
-
-					if (tsDifD >= 1.0f)
-					{
-						tsDifD = 1.0f;
-					}
-
-					state.handler.processMotionSample(tsDifD, tracking.gyro.x, tracking.gyro.y, tracking.gyro.z, tracking.acc.x, -tracking.acc.y, -tracking.acc.z);
-					state.data = state.handler.getMotionSample();
-				}
-
-				tracking.hasAcc = false;
-				tracking.hasGyro = false;
-			}
+			ProcessSensorSample(s_motion_states[event.gsensor.which], (SDL_SensorType)event.gsensor.sensor, event.gsensor.timestamp, event.gsensor.data);
 			break;
 		}
+	}
+}
+
+// data is in SDL's sensor frame and units (accel in m/s^2, gyro in rad/s)
+void SDLControllerProvider::ProcessSensorSample(MotionState& state, SDL_SensorType sensor, uint64 ts, const float* data)
+{
+	auto& tracking = state.tracking;
+
+	if (sensor == SDL_SENSOR_ACCEL)
+	{
+		const auto dif = ts - tracking.lastTimestampAccel;
+		if (dif <= 0)
+		{
+			return;
+		}
+
+		if (dif >= 10000000000)
+		{
+			tracking.hasAcc = false;
+			tracking.hasGyro = false;
+			tracking.lastTimestampAccel = ts;
+			return;
+		}
+
+		tracking.lastTimestampAccel = ts;
+		tracking.acc[0] = -data[0] / 9.81f;
+		tracking.acc[1] = -data[1] / 9.81f;
+		tracking.acc[2] = -data[2] / 9.81f;
+		tracking.hasAcc = true;
+	}
+	if (sensor == SDL_SENSOR_GYRO)
+	{
+		const auto dif = ts - tracking.lastTimestampGyro;
+		if (dif <= 0)
+		{
+			return;
+		}
+
+		if (dif >= 10000000000)
+		{
+			tracking.hasAcc = false;
+			tracking.hasGyro = false;
+			tracking.lastTimestampGyro = ts;
+			return;
+		}
+
+		tracking.lastTimestampGyro = ts;
+		tracking.gyro[0] = data[0];
+		tracking.gyro[1] = -data[1];
+		tracking.gyro[2] = -data[2];
+		tracking.hasGyro = true;
+	}
+	if (tracking.hasAcc && tracking.hasGyro)
+	{
+		auto ts = std::max(tracking.lastTimestampGyro, tracking.lastTimestampAccel);
+
+		if (ts > tracking.lastTimestampIntegrate)
+		{
+			const auto tsDif = ts - tracking.lastTimestampIntegrate;
+			tracking.lastTimestampIntegrate = ts;
+			float tsDifD = (float)tsDif / 1000000000.0f;
+
+			if (tsDifD >= 1.0f)
+			{
+				tsDifD = 1.0f;
+			}
+
+			state.handler.processMotionSample(tsDifD, tracking.gyro.x, tracking.gyro.y, tracking.gyro.z, tracking.acc.x, -tracking.acc.y, -tracking.acc.z);
+			state.data = state.handler.getMotionSample();
+		}
+
+		tracking.hasAcc = false;
+		tracking.hasGyro = false;
 	}
 }
 
