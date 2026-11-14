@@ -357,6 +357,9 @@ namespace
 		s_available = available;
 		probeResult.set_value(available);
 
+		// CEMU_SYSTEM_IMU_DEBUG=1 logs a sample roughly every half second
+		const bool debugLog = GetEnv("CEMU_SYSTEM_IMU_DEBUG").has_value();
+		const uint64_t debugEvery = (uint64_t)std::max(1, rateHz / 2);
 		uint64_t sampleCount = 0;
 		bool gyroErrorLogged = false, accelErrorLogged = false;
 		auto nextPoll = std::chrono::steady_clock::now();
@@ -375,7 +378,7 @@ namespace
 				callback(ts, sdlGyro, sdlAccel);
 
 				// log a sample at startup and after a few seconds, to help with checking the axis mapping
-				if (sampleCount == 0 || sampleCount == (uint64_t)rateHz * 5)
+				if (sampleCount == 0 || sampleCount == (uint64_t)rateHz * 5 || (debugLog && sampleCount % debugEvery == 0))
 				{
 					cemuLog_log(LogType::Force, "SystemIMU: raw gyro (deg/s) {:.2f} {:.2f} {:.2f} | raw accel (g) {:.3f} {:.3f} {:.3f}",
 								rawGyro[0], rawGyro[1], rawGyro[2], rawAccel[0], rawAccel[1], rawAccel[2]);

@@ -118,7 +118,20 @@ MotionSample SDLController::get_motion_sample()
 	if (is_connected() && has_motion())
 	{
 		if (m_use_system_imu)
-			return m_provider->system_imu_motion_sample();
+		{
+			auto sample = m_provider->system_imu_motion_sample();
+			// CEMU_SYSTEM_IMU_DEBUG=1: confirm the game side is asking for motion, and what it gets
+			static const bool s_debugLog = std::getenv("CEMU_SYSTEM_IMU_DEBUG") != nullptr;
+			static uint64 s_calls = 0;
+			if (s_debugLog && (s_calls++ % 120) == 0)
+			{
+				float gyro[3], acc[3];
+				sample.getVPADGyroChange(gyro);
+				sample.getVPADAccelerometer(acc);
+				cemuLog_log(LogType::Force, "SystemIMU: game read #{} gyroChange {:.4f} {:.4f} {:.4f} | acc {:.3f} {:.3f} {:.3f}", s_calls, gyro[0], gyro[1], gyro[2], acc[0], acc[1], acc[2]);
+			}
+			return sample;
+		}
 		return m_provider->motion_sample(m_diid);
 	}
 	return {};
